@@ -1,0 +1,59 @@
+using System;
+using System.Collections.Generic;
+using System.IO;
+
+namespace StudentConsultationLogs.Services
+{
+    public class AuditLogger
+    {
+        private readonly string _auditFilePath;
+
+        public AuditLogger(string dataFolder)
+        {
+            _auditFilePath = Path.Combine(dataFolder, "audit.log");
+            if (!File.Exists(_auditFilePath))
+                File.Create(_auditFilePath).Dispose();
+        }
+
+        public void Log(string action, string? recordId, string details)
+        {
+            try
+            {
+                var timestamp = DateTime.UtcNow.ToString("o");
+                var line = $"{timestamp} | INFO | {action}{(recordId != null ? $" | RecordId={recordId}" : "")} | {details}";
+                File.AppendAllText(_auditFilePath, line + Environment.NewLine);
+            }
+            catch
+            {
+                // Fail silently for audit logging errors
+            }
+        }
+
+        public void LogError(string action, string? recordId, string details)
+        {
+            try
+            {
+                var timestamp = DateTime.UtcNow.ToString("o");
+                var line = $"{timestamp} | ERROR | {action}{(recordId != null ? $" | RecordId={recordId}" : "")} | {details}";
+                File.AppendAllText(_auditFilePath, line + Environment.NewLine);
+            }
+            catch
+            {
+                // Fail silently
+            }
+        }
+
+        public List<string> GetTail(int count)
+        {
+            if (!File.Exists(_auditFilePath)) return new List<string>();
+
+            var lines = File.ReadAllLines(_auditFilePath);
+            var tail = new List<string>();
+            int start = Math.Max(0, lines.Length - count);
+            for (int i = start; i < lines.Length; i++)
+                tail.Add(lines[i]);
+
+            return tail;
+        }
+    }
+}
