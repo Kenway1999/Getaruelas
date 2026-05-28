@@ -1,0 +1,31 @@
+namespace StudentConsultationLogs.Services
+{
+    public class ValidationResult
+    {
+        public bool IsValid { get; set; }
+        public string ErrorMessage { get; set; } = "";
+    }
+
+    public class ValidationService
+    {
+        public ValidationResult ValidateRecord(string studentName, string studentId, string advisorName, string notes)
+        {
+            if (string.IsNullOrWhiteSpace(studentName) || studentName.Length < 2 || studentName.Length > 100)
+                return new ValidationResult { IsValid = false, ErrorMessage = "StudentName must be 2-100 characters." };
+
+            if (string.IsNullOrWhiteSpace(studentId) || studentId.Length < 3 || studentId.Length > 20)
+                return new ValidationResult { IsValid = false, ErrorMessage = "StudentId must be 3-20 alphanumeric characters." };
+
+            if (!System.Text.RegularExpressions.Regex.IsMatch(studentId, "^[a-zA-Z0-9]+$"))
+                return new ValidationResult { IsValid = false, ErrorMessage = "StudentId must be alphanumeric only." };
+
+            if (string.IsNullOrWhiteSpace(advisorName) || advisorName.Length < 2 || advisorName.Length > 100)
+                return new ValidationResult { IsValid = false, ErrorMessage = "AdvisorName must be 2-100 characters." };
+
+            if (!string.IsNullOrWhiteSpace(notes) && notes.Length > 2000)
+                return new ValidationResult { IsValid = false, ErrorMessage = "ConsultationNotes must not exceed 2000 characters." };
+
+            return new ValidationResult { IsValid = true };
+        }
+    }
+}
