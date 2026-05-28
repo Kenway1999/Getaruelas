@@ -1,0 +1,60 @@
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using StudentConsultationLogs.Models;
+
+namespace StudentConsultationLogs.Services
+{
+    public class ReportGenerator
+    {
+        private readonly string _dataFolder;
+        private readonly AuditLogger _auditLogger;
+        private readonly FileRepository _repository;
+
+        public ReportGenerator(string dataFolder, AuditLogger auditLogger)
+        {
+            _dataFolder = dataFolder;
+            _auditLogger = auditLogger;
+            _repository = new FileRepository(dataFolder);
+        }
+
+        public async System.Threading.Tasks.Task<string> GenerateMonthlyReportByAdvisorAsync(string month, string year)
+        {
+            var allRecords = _repository.GetAllActiveRecords();
+            var filtered = allRecords.Where(r =>
+            {
+                try
+                {
+                    var dt = DateTime.Parse(r.CreatedAt);
+                    return dt.Month == int.Parse(month) && dt.Year == int.Parse(year);
+                }
+                catch { return false; }
+            }).ToList();
+
+            var advisorStats = new Dictionary<string, (int count, HashSet<string> students)>();
+
+            foreach (var r in filtered)
+            {
+                if (!advisorStats.ContainsKey(r.AdvisorName))
+                    advisorStats[r.AdvisorName] = (0, new HashSet<string>());
+                advisorStats[r.AdvisorName].count++;
+                advisorStats[r.AdvisorName].students.Add(r.StudentId);
+            }
+
+            var reportPath = Path.Combine(_dataFolder, "backups", $"report_{year}{month}_{DateTime.UtcNow:yyyyMMdd_HHmmss}.csv");
+            var lines = new List<string>();
+            lines.Add("AdvisorName,ConsultationCount,DistinctStudents,PercentActive");
+
+            int totalActive = filtered.Count(r => r.IsActive);
+            foreach (var kvp in advisorStats)
+            {
+                double pctActive = filtered.Count == 0 ? 0 : (filtered.Count(r => r.AdvisorName == kvp.Key && r.IsActive) * 100.0) / filtered.Count(r => r.AdvisorName == kvp.Key);
+                lines.Add($"\"{kvp.Key}\",{kvp.Value.count},{kvp.Value.students.Count},{pctActive:F2}%");
+            }
+
+            await File.WriteAllLinesAsync(reportPath, lines);
+            return reportPath;
+        }
+    }
+}
