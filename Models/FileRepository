@@ -1,0 +1,140 @@
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.Threading.Tasks;
+using StudentConsultationLogs.Models;
+
+namespace StudentConsultationLogs.Services
+{
+    public class FileRepository
+    {
+        private readonly string _dataFolder;
+        private readonly string _recordsFilePath;
+
+        public FileRepository(string dataFolder)
+        {
+            _dataFolder = dataFolder;
+            _recordsFilePath = Path.Combine(_dataFolder, "records.ndjson");
+        }
+
+        public async Task InitializeStorageAsync()
+        {
+            if (!Directory.Exists(_dataFolder))
+                Directory.CreateDirectory(_dataFolder);
+
+            if (!Directory.Exists(Path.Combine(_dataFolder, "backups")))
+                Directory.CreateDirectory(Path.Combine(_dataFolder, "backups"));
+
+            if (!File.Exists(_recordsFilePath))
+            {
+                await File.WriteAllTextAsync(_recordsFilePath, "");
+            }
+        }
+
+        public async Task AddRecordAsync(Record record)
+        {
+            var line = record.ToJsonLine() + Environment.NewLine;
+            await File.AppendAllTextAsync(_recordsFilePath, line);
+        }
+
+        public List<Record> GetAllActiveRecords()
+        {
+            var records = new List<Record>();
+            if (!File.Exists(_recordsFilePath)) return records;
+
+            foreach (var line in File.ReadAllLines(_recordsFilePath))
+            {
+                if (string.IsNullOrWhiteSpace(line)) continue;
+                try
+                {
+                    var record = Record.FromJsonLine(line);
+                    if (record.IsActive && record.VerifyChecksum())
+                        records.Add(record);
+                }
+                catch
+                {
+                    // Skip malformed lines
+                }
+            }
+
+            return records;
+        }
+
+        public Record? GetRecordById(string recordId)
+        {
+            if (!File.Exists(_recordsFilePath)) return null;
+
+            foreach (var line in File.ReadAllLines(_recordsFilePath))
+            {
+                if (string.IsNullOrWhiteSpace(line)) continue;
+                try
+                {
+                    var record = Record.FromJsonLine(line);
+                    if (record.RecordId.Equals(recordId, StringComparison.OrdinalIgnoreCase))
+                        return record;
+                }
+                catch { }
+            }
+
+            return null;
+        }
+
+        public async Task UpdateRecordAsync(Record record)
+        {
+            await ReplaceRecordsFileAsync(r => r.RecordId != record.RecordId, record);
+        }
+
+        public async Task HardDeleteRecordAsync(string recordId)
+        {
+            await ReplaceRecordsFileAsync(r => r.RecordId != recordId, null);
+        }
+
+        private async Task ReplaceRecordsFileAsync(Func<Record, bool> includePredicate, Record? updatedRecord)
+        {
+            var records = GetAllRecordsRaw();
+            var filtered = records.Where(includePredicate).ToList();
+
+            if (updatedRecord != null)
+                filtered.Add(updatedRecord);
+
+            var tempPath = _recordsFilePath + ".tmp";
+            await File.WriteAllLinesAsync(tempPath, filtered.Select(r => r.ToJsonLine()));
+
+            if (File.Exists(_recordsFilePath))
+                File.Copy(_recordsFilePath, Path.Combine(_dataFolder, "backups", $"backup_{DateTime.UtcNow:yyyyMMdd_HHmmss}.ndjson"), true);
+
+            File.Replace(tempPath, _recordsFilePath, null);
+        }
+
+        private List<Record> GetAllRecordsRaw()
+        {
+            var records = new List<Record>();
+            if (!File.Exists(_recordsFilePath)) return records;
+
+            foreach (var line in File.ReadAllLines(_recordsFilePath))
+            {
+                if (string.IsNullOrWhiteSpace(line)) continue;
+                try
+                {
+                    records.Add(Record.FromJsonLine(line));
+                }
+                catch { }
+            }
+
+            return records;
+        }
+
+        public List<Record> SearchByStudentName(string searchTerm)
+        {
+            var all = GetAllActiveRecords();
+            return all.Where(r => r.StudentName.Contains(searchTerm, StringComparison.OrdinalIgnoreCase)).ToList();
+        }
+
+        public List<Record> SearchByAdvisorName(string searchTerm)
+        {
+            var all = GetAllActiveRecords();
+            return all.Where(r => r.AdvisorName.Contains(searchTerm, StringComparison.OrdinalIgnoreCase)).ToList();
+        }
+    }
+}
