@@ -1,0 +1,363 @@
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using StudentConsultationLogs.Models;
+using StudentConsultationLogs.Services;
+
+namespace StudentConsultationLogs
+{
+    class Program
+    {
+        private static FileRepository _repository = null!;
+        private static ValidationService _validator = null!;
+        private static AuditLogger _auditLogger = null!;
+        private static ReportGenerator _reportGenerator = null!;
+
+        static async System.Threading.Tasks.Task Main(string[] args)
+        {
+            InitializeServices();
+            await _repository.InitializeStorageAsync();
+
+            while (true)
+            {
+                ShowMenu();
+                string? choice = Console.ReadLine()?.Trim();
+
+                switch (choice)
+                {
+                    case "1": await AddRecordAsync(); break;
+                    case "2": ViewRecords(); break;
+                    case "3": await SearchRecordsAsync(); break;
+                    case "4": await UpdateRecordAsync(); break;
+                    case "5": await SoftDeleteRecordAsync(); break;
+                    case "6": await HardDeleteRecordAsync(); break;
+                    case "7": await GenerateReportAsync(); break;
+                    case "8": ShowAuditLogTail(); break;
+                    case "0":
+                        _auditLogger.Log("EXIT", null, "User exited application");
+                        Console.WriteLine("Goodbye!");
+                        return;
+                    default:
+                        Console.WriteLine("Invalid option. Please try again.");
+                        _auditLogger.Log("ERROR", null, "Invalid menu option selected");
+                        break;
+                }
+
+                Console.WriteLine();
+                Console.Write("Press any key to continue...");
+                Console.ReadKey();
+                Console.Clear();
+            }
+        }
+
+        private static void InitializeServices()
+        {
+            string dataFolder = Path.Combine(Directory.GetCurrentDirectory(), "DataStore");
+            _repository = new FileRepository(dataFolder);
+            _validator = new ValidationService();
+            _auditLogger = new AuditLogger(dataFolder);
+            _reportGenerator = new ReportGenerator(dataFolder, _auditLogger);
+        }
+
+        private static void ShowMenu()
+        {
+            Console.Clear();
+            Console.WriteLine("=== Student Consultation Logs ===");
+            Console.WriteLine("1. Add record");
+            Console.WriteLine("2. View records");
+            Console.WriteLine("3. Search records");
+            Console.WriteLine("4. Update record");
+            Console.WriteLine("5. Soft delete record");
+            Console.WriteLine("6. Hard delete record (PERMANENT)");
+            Console.WriteLine("7. Generate report");
+            Console.WriteLine("8. Show audit log tail");
+            Console.WriteLine("0. Exit");
+            Console.Write("Select an option: ");
+        }
+
+        private static async System.Threading.Tasks.Task AddRecordAsync()
+        {
+            Console.WriteLine("=== Add New Consultation Record ===");
+
+            string studentName = GetInput("Student Name (2-100 chars): ");
+            string studentId = GetInput("Student ID (alphanumeric, 3-20 chars): ");
+            string advisorName = GetInput("Advisor Name (2-100 chars): ");
+            string notes = GetInput("Consultation Notes (optional, max 2000 chars): ");
+
+            var validationResult = _validator.ValidateRecord(studentName, studentId, advisorName, notes);
+            if (!validationResult.IsValid)
+            {
+                Console.WriteLine($"Validation error: {validationResult.ErrorMessage}");
+                _auditLogger.Log("VALIDATION_ERROR", null, $"Add failed: {validationResult.ErrorMessage}");
+                return;
+            }
+
+            try
+            {
+                var record = Record.Create(studentName, studentId, advisorName, notes);
+                await _repository.AddRecordAsync(record);
+                Console.WriteLine($"Record added successfully! RecordId: {record.RecordId}");
+                _auditLogger.Log("ADD", record.RecordId, $"Record added: StudentId={record.StudentId}");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error adding record: {ex.Message}");
+                _auditLogger.Log("ERROR", null, $"Add failed: {ex.Message}");
+            }
+        }
+
+        private static void ViewRecords()
+        {
+            Console.WriteLine("=== All Active Records ===");
+            try
+            {
+                var records = _repository.GetAllActiveRecords();
+                if (records.Count == 0)
+                {
+                    Console.WriteLine("No active records found.");
+                    _auditLogger.Log("READ", null, "View records: no active records");
+                    return;
+                }
+
+                DisplayRecords(records);
+                _auditLogger.Log("READ", null, $"View records: {records.Count} active records displayed");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error viewing records: {ex.Message}");
+                _auditLogger.Log("ERROR", null, $"View failed: {ex.Message}");
+            }
+        }
+
+        private static async System.Threading.Tasks.Task SearchRecordsAsync()
+        {
+            Console.WriteLine("=== Search Records ===");
+            Console.WriteLine("1. Search by Student Name");
+            Console.WriteLine("2. Search by Advisor Name");
+            Console.Write("Select search type: ");
+            string? choice = Console.ReadLine()?.Trim();
+
+            string searchTerm = GetInput("Enter search term: ");
+
+            try
+            {
+                List<Record> results = choice == "1"
+                    ? _repository.SearchByStudentName(searchTerm)
+                    : _repository.SearchByAdvisorName(searchTerm);
+
+                if (results.Count == 0)
+                {
+                    Console.WriteLine("No records found matching your search.");
+                    _auditLogger.Log("READ", null, $"Search: no results for '{searchTerm}'");
+                    return;
+                }
+
+                Console.WriteLine($"Found {results.Count} record(s):");
+                DisplayRecords(results);
+                _auditLogger.Log("READ", null, $"Search: {results.Count} results for '{searchTerm}'");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error searching records: {ex.Message}");
+                _auditLogger.Log("ERROR", null, $"Search failed: {ex.Message}");
+            }
+        }
+
+        private static async System.Threading.Tasks.Task UpdateRecordAsync()
+        {
+            Console.WriteLine("=== Update Record ===");
+            string recordId = GetInput("Enter RecordId to update: ");
+
+            try
+            {
+                var record = _repository.GetRecordById(recordId);
+                if (record == null)
+                {
+                    Console.WriteLine("Record not found.");
+                    _auditLogger.Log("ERROR", recordId, "Update failed: record not found");
+                    return;
+                }
+
+                Console.WriteLine($"Current values:");
+                Console.WriteLine($"  StudentName: {record.StudentName}");
+                Console.WriteLine($"  StudentId: {record.StudentId}");
+                Console.WriteLine($"  AdvisorName: {record.AdvisorName}");
+                Console.WriteLine($"  Notes: {record.ConsultationNotes}");
+
+                string studentName = GetInput($"New Student Name (press Enter to keep current): ");
+                string studentId = GetInput($"New Student ID (press Enter to keep current): ");
+                string advisorName = GetInput($"New Advisor Name (press Enter to keep current): ");
+                string notes = GetInput($"New Notes (press Enter to keep current): ");
+
+                if (string.IsNullOrWhiteSpace(studentName)) studentName = record.StudentName;
+                if (string.IsNullOrWhiteSpace(studentId)) studentId = record.StudentId;
+                if (string.IsNullOrWhiteSpace(advisorName)) advisorName = record.AdvisorName;
+                if (string.IsNullOrWhiteSpace(notes)) notes = record.ConsultationNotes;
+
+                var validationResult = _validator.ValidateRecord(studentName, studentId, advisorName, notes);
+                if (!validationResult.IsValid)
+                {
+                    Console.WriteLine($"Validation error: {validationResult.ErrorMessage}");
+                    _auditLogger.Log("VALIDATION_ERROR", recordId, $"Update failed: {validationResult.ErrorMessage}");
+                    return;
+                }
+
+                record.Update(studentName, studentId, advisorName, notes);
+                await _repository.UpdateRecordAsync(record);
+                Console.WriteLine("Record updated successfully!");
+                _auditLogger.Log("UPDATE", record.RecordId, $"Record updated: StudentId={record.StudentId}");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error updating record: {ex.Message}");
+                _auditLogger.Log("ERROR", recordId, $"Update failed: {ex.Message}");
+            }
+        }
+
+        private static async System.Threading.Tasks.Task SoftDeleteRecordAsync()
+        {
+            Console.WriteLine("=== Soft Delete Record ===");
+            string recordId = GetInput("Enter RecordId to soft delete: ");
+
+            try
+            {
+                var record = _repository.GetRecordById(recordId);
+                if (record == null)
+                {
+                    Console.WriteLine("Record not found.");
+                    _auditLogger.Log("ERROR", recordId, "Soft delete failed: record not found");
+                    return;
+                }
+
+                record.SoftDelete();
+                await _repository.UpdateRecordAsync(record);
+                Console.WriteLine("Record soft deleted (marked inactive).");
+                _auditLogger.Log("SOFT_DELETE", record.RecordId, $"Record soft deleted: StudentId={record.StudentId}");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error soft deleting record: {ex.Message}");
+                _auditLogger.Log("ERROR", recordId, $"Soft delete failed: {ex.Message}");
+            }
+        }
+
+        private static async System.Threading.Tasks.Task HardDeleteRecordAsync()
+        {
+            Console.WriteLine("=== Hard Delete Record (PERMANENT) ===");
+            Console.Write("Are you sure you want to permanently delete? (y/n): ");
+            if (Console.ReadLine()?.Trim().ToLower() != "y")
+            {
+                Console.WriteLine("Hard delete cancelled.");
+                return;
+            }
+
+            string recordId = GetInput("Enter RecordId to hard delete: ");
+
+            try
+            {
+                var record = _repository.GetRecordById(recordId);
+                if (record == null)
+                {
+                    Console.WriteLine("Record not found.");
+                    _auditLogger.Log("ERROR", recordId, "Hard delete failed: record not found");
+                    return;
+                }
+
+                await _repository.HardDeleteRecordAsync(recordId);
+                Console.WriteLine("Record hard deleted (permanently removed).");
+                _auditLogger.Log("HARD_DELETE", record.RecordId, $"Record hard deleted: StudentId={record.StudentId}");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error hard deleting record: {ex.Message}");
+                _auditLogger.Log("ERROR", recordId, $"Hard delete failed: {ex.Message}");
+            }
+        }
+
+        private static async System.Threading.Tasks.Task GenerateReportAsync()
+        {
+            Console.WriteLine("=== Generate Report ===");
+            Console.WriteLine("1. Monthly Consultation Summary by Advisor");
+            Console.Write("Select report type (1): ");
+            var _ = Console.ReadLine();
+
+            string month = GetInput("Enter month (MM, e.g., 05): ");
+            string year = GetInput("Enter year (YYYY, e.g., 2026): ");
+
+            try
+            {
+                string reportPath = await _reportGenerator.GenerateMonthlyReportByAdvisorAsync(month, year);
+                Console.WriteLine($"Report generated: {reportPath}");
+                _auditLogger.Log("REPORT", null, $"Report generated: {reportPath}");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error generating report: {ex.Message}");
+                _auditLogger.Log("ERROR", null, $"Report generation failed: {ex.Message}");
+            }
+        }
+
+        private static void ShowAuditLogTail()
+        {
+            Console.WriteLine("=== Last 20 Audit Log Entries ===");
+            try
+            {
+                var tail = _auditLogger.GetTail(20);
+                foreach (var line in tail)
+                    Console.WriteLine(line);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error reading audit log: {ex.Message}");
+            }
+        }
+
+        private static string GetInput(string prompt)
+        {
+            Console.Write(prompt);
+            return Console.ReadLine()?.Trim() ?? string.Empty;
+        }
+
+        private static void DisplayRecords(List<Record> records)
+        {
+            int page = 0;
+            int pageSize = 10;
+            int totalPages = (records.Count + pageSize - 1) / pageSize;
+
+            while (true)
+            {
+                int start = page * pageSize;
+                int end = Math.Min(start + pageSize, records.Count);
+                var pageRecords = records.Skip(start).Take(pageSize);
+
+                Console.WriteLine();
+                Console.WriteLine($"Page {page + 1}/{totalPages}");
+                Console.WriteLine("--------------------------------------------------------------------------------");
+                Console.WriteLine($"{ "RecordId",-38} { "StudentName",-25} { "StudentId",-12} { "IsActive",-10}");
+                Console.WriteLine("--------------------------------------------------------------------------------");
+
+                foreach (var r in pageRecords)
+                {
+                    string displayName = r.StudentName.Length > 24 ? r.StudentName[..24] + "..." : r.StudentName;
+                    Console.WriteLine($"{r.RecordId,-38} {displayName,-25} {r.StudentId,-12} {r.IsActive,-10}");
+                }
+
+                Console.WriteLine("--------------------------------------------------------------------------------");
+
+                if (totalPages <= 1) break;
+
+                Console.WriteLine();
+                Console.Write("Next (n), Previous (p), or Quit (q): ");
+                string? key = Console.ReadLine()?.Trim().ToLower();
+
+                if (key == "n" && page < totalPages - 1) page++;
+                else if (key == "p" && page > 0) page--;
+                else break;
+
+                Console.Clear();
+                Console.WriteLine("=== All Active Records ===");
+            }
+        }
+    }
+}
